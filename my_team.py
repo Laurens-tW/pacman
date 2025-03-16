@@ -335,7 +335,7 @@ class HybridReflexAgent1(ReflexCaptureAgent):
 class HybridReflexAgent2(ReflexCaptureAgent):
     def __init__(self, index):
         super().__init__(index)
-        self.threshold = 18
+        self.threshold = 10
         self.food = 0
         self.maxfood = 3
         self.is_defensive = True
