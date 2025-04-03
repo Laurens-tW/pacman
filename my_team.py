@@ -135,6 +135,11 @@ class ReflexCaptureAgent(CaptureAgent):
         return {'successor_score': 1.0}
 
 class HybridReflexAgent1(ReflexCaptureAgent):
+    #initialize: - threshold (if the score goes above this number, the agent will become defensive)
+    #            - food (the pellets the agent ate that has not been brought back yet)
+    #            - maxfood (the number pellets an agent will eat before going back)
+    #            - is_defensive (is true when the agent is defensive)
+    #            - last_food_count (will store how much pellets there were before the agent took its action)
     def __init__(self, index):
         super().__init__(index)
         self.threshold = 18
@@ -144,6 +149,7 @@ class HybridReflexAgent1(ReflexCaptureAgent):
         self.last_food_count = None
 
 
+    #returns true when an agent is on its own side, therefore in ghost form
     def pacman_on_own_side(self,game_state):
         mid_x = game_state.data.layout.width // 2
         my_pos = game_state.get_agent_position(self.index)
@@ -161,6 +167,7 @@ class HybridReflexAgent1(ReflexCaptureAgent):
         curr_food_list = self.get_food(game_state).as_list()
         food_list = self.get_food(successor).as_list()
 
+        #Agent state and scared timer
         my_state = game_state.get_agent_state(self.index)
         my_scared_timer = my_state.scared_timer
 
@@ -178,18 +185,11 @@ class HybridReflexAgent1(ReflexCaptureAgent):
 
 
 
-        # if self.is_defensive:
-        #     print("agent 2 is defensive")
-        # else:
-        #     print("agent 2 is offensive")
-
-
-
         # defensive features
         my_state = successor.get_agent_state(self.index)
         my_pos = my_state.get_position()
 
-
+        #when the agent is on its own side, it delivers eaten pellets
         if self.pacman_on_own_side(game_state):
             self.food = 0
 
@@ -200,49 +200,59 @@ class HybridReflexAgent1(ReflexCaptureAgent):
         # Computes distance to invaders we can see
         enemies = [successor.get_agent_state(i) for i in self.get_opponents(successor)]
         invaders = [a for a in enemies if a.is_pacman and a.get_position() is not None]
+        # Reducing number of invaders has a high priority
         features['num_invaders'] = len(invaders)
         if len(invaders) > 0:
             dists = [self.get_maze_distance(my_pos, a.get_position()) for a in invaders]
+            #reducing invader distance will make agent eat invaders
             features['invader_distance'] = min(dists)
             if min(dists) < 10:
+                #used when scared
                 features['flee'] = 1
 
         #computes distance to start position
+        #is used to find path back to own side
         disttostart = self.get_maze_distance(my_pos, self.start)
         if my_state.is_pacman:
             features['distance_to_start'] = disttostart
         else:
             features['distance_to_start'] = 0
 
+        #is used to punish standing still and repeating moves
         if action == Directions.STOP: features['stop'] = 1
         rev = Directions.REVERSE[game_state.get_agent_state(self.index).configuration.direction]
         if action == rev: features['reverse'] = 1
 
 
+
         #offensive features
 
+        #to make agents eat food, we make them want to reduce the amount of food
         features['successor_score'] = -len(food_list)
 
+        #path finding to nearest pellet
         if len(food_list) > 0:
             my_pos = successor.get_agent_state(self.index).get_position()
             min_distance = min([self.get_maze_distance(my_pos, food) for food in food_list])
             features['distance_to_food'] = min_distance
 
-
+        #determines if defenders are scared or not
         opponents = self.get_opponents(game_state)
         max_scared_time = 0
         closest_scared_ghost_dist = float('inf')
         for opponent in opponents:
             ghost_state = game_state.get_agent_state(opponent)
-            if not ghost_state.is_pacman:  # spook
+            if not ghost_state.is_pacman:  # ghost
                 scared_timer = ghost_state.scared_timer
                 max_scared_time = max(max_scared_time, scared_timer)
+                #if the defender will be scared for more than 5 rounds, try to eat him
                 if scared_timer > 5:
                     ghost_pos = ghost_state.get_position()
                     if ghost_pos:
                         dist = self.get_maze_distance(my_pos, ghost_pos)
                         closest_scared_ghost_dist = min(closest_scared_ghost_dist, dist)
                         features['distance_to_scared_ghost'] = closest_scared_ghost_dist
+                #if not, keep distance/run away depending how close ghost is
                 else:
                     features['distance_to_scared_ghost'] = 0
                     defenders = [a for a in enemies if not a.is_pacman and a.get_position() is not None]
@@ -251,6 +261,8 @@ class HybridReflexAgent1(ReflexCaptureAgent):
                         dists = [self.get_maze_distance(my_pos, a.get_position()) for a in defenders]
                         mindist = min(dists)
                         if mindist < 3:
+                            #ghost_really_close returns a higher number when a ghost is closer
+                            #we combine this with a high penalty
                             features['ghost_really_close'] = 3 - mindist
                             features['getoutofthere'] = 1
                         elif mindist < 8:
@@ -263,6 +275,7 @@ class HybridReflexAgent1(ReflexCaptureAgent):
 
         #agent acts defensive when: -total game score is high enough,
         #                           -it is holding enough pellets (to bring them home)
+        #                           -it sees an invader when returning home
         #it turns offensive when the enemy eats a power pellet
         if (self.get_score(game_state) >= self.threshold or self.food > self.maxfood) and my_scared_timer == 0:
             self.is_defensive = True
@@ -274,41 +287,47 @@ class HybridReflexAgent1(ReflexCaptureAgent):
 
         return features
 
+    #weights will change depending on the state of the agent (defensive/offensive, pacman/ghost, scared/not scared)
     def get_weights(self, game_state, action):
         my_state = game_state.get_agent_state(self.index)
         my_scared_timer = my_state.scared_timer
+        #when the agent is pacman and becomes defensive, it will: - avoid ghosts
+        #                                                         - try to go to its own side
+        #                                                         - already try to eat invaders
         if self.is_defensive and my_state.is_pacman:
             #defensive weights
-            return {#'num_invaders': -1000,
-                    'on_defense': 100,
+            return {'on_defense': 100,
                     'invader_distance': -500,
                     'stop': -200,
                     'reverse': -1,
                     'distance_to_start': -30,
                     'ghost_really_close': -500,
                     'ghost_close': 100,
-                    'getoutofthere': -100,
-                    'distance_enemy_most_food': -100
+                    'getoutofthere': -100
                     }
+        #when the agent is a ghost, defensive and scared, it will try to stay at a safe distance from invaders
         elif self.is_defensive and not my_state.is_pacman:
             if my_scared_timer > 0:
                 return {'flee': -500,
                         'stop': -200,
                         'reverse': -1
                         }
+            #when not scared, it will: - try to reduce the number of invaders (very high priority)
+            #                          - reduce distance to the closest invader
             else:
                 return {
                     'num_invaders': -5000,
                     'on_defense': 100,
                     'invader_distance': -500,
                     'stop': -200,
-                    'reverse': -1,
-                    'distance_enemy_most_food': -50
-                    #'distance_to_start': -30,
-                    #'ghost_really_close': -100,
-                    #'ghost_close': 10
-                    #'getoutofthere': -100
+                    'reverse': -1
                 }
+        #the weights of an offensive ghost and an offensive pacman only differ in how much they want to avoid defenders
+        #a ghost cannot be eaten, but it does try to avoid running into a defender when it changes to pacman
+        #a pacman gives highest priority to running away from ghosts
+        #besides this, it will: - try to eat pellets
+        #                       - try to reduce the distance to pellets
+        #                       - try to eat scared ghosts
         elif not self.is_defensive and not my_state.is_pacman:
             #offensive weights
             return {'successor_score': 100,
@@ -331,13 +350,13 @@ class HybridReflexAgent1(ReflexCaptureAgent):
                     'distance_to_scared_ghost': -500
                     }
 
-
+#HybridReflexAgent2 is almost the same as HybridReflexAgent1, further comments will indicate differences
 class HybridReflexAgent2(ReflexCaptureAgent):
     def __init__(self, index):
         super().__init__(index)
-        self.threshold = 10
+        self.threshold = 10     #this agent will become defensive earlier: 10 vs 18
         self.food = 0
-        self.maxfood = 3
+        self.maxfood = 3        #this agent is more greedy, it will eat 3 pellets instead of 2 before returning home
         self.is_defensive = True
         self.last_food_count = None
 
@@ -373,13 +392,6 @@ class HybridReflexAgent2(ReflexCaptureAgent):
 
         #update global food count
         self.last_food_count = len(curr_food_list)
-
-
-
-        # if self.is_defensive:
-        #     print("agent 2 is defensive")
-        # else:
-        #     print("agent 2 is offensive")
 
 
 
@@ -459,9 +471,7 @@ class HybridReflexAgent2(ReflexCaptureAgent):
 
         features['scared_ghost_time'] = max_scared_time
 
-        #agent acts defensive when: -total game score is high enough,
-        #                           -it is holding enough pellets (to bring them home)
-        #it turns offensive when the enemy eats a power pellet
+
         if (self.get_score(game_state) >= self.threshold or self.food > self.maxfood) and my_scared_timer == 0:
             self.is_defensive = True
         elif self.pacman_on_own_side(game_state) and len(invaders) > 0:
@@ -473,21 +483,20 @@ class HybridReflexAgent2(ReflexCaptureAgent):
 
         return features
 
+    #weights are exactly the same as HybridReflexAgent1
     def get_weights(self, game_state, action):
         my_state = game_state.get_agent_state(self.index)
         my_scared_timer = my_state.scared_timer
         if self.is_defensive and my_state.is_pacman:
             #defensive weights
-            return {#'num_invaders': -1000,
-                    'on_defense': 100,
+            return {'on_defense': 100,
                     'invader_distance': -500,
                     'stop': -200,
                     'reverse': -1,
                     'distance_to_start': -30,
                     'ghost_really_close': -500,
                     'ghost_close': 100,
-                    'getoutofthere': -100,
-                    'distance_enemy_most_food': -100
+                    'getoutofthere': -100
                     }
         elif self.is_defensive and not my_state.is_pacman:
             if my_scared_timer > 0:
@@ -501,12 +510,7 @@ class HybridReflexAgent2(ReflexCaptureAgent):
                     'on_defense': 100,
                     'invader_distance': -500,
                     'stop': -200,
-                    'reverse': -1,
-                    'distance_enemy_most_food': -50
-                    #'distance_to_start': -30,
-                    #'ghost_really_close': -100,
-                    #'ghost_close': 10
-                    #'getoutofthere': -100
+                    'reverse': -1
                 }
         elif not self.is_defensive and not my_state.is_pacman:
             #offensive weights
